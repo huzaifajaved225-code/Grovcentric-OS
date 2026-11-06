@@ -1,17 +1,53 @@
-"""Grovcentric API (demo). Replace DEMO_* with a real DB + hashed passwords + JWT before production."""
+"""Grovcentric demo API. Replace in-memory demo data with persistent services before production."""
 import secrets
+from datetime import datetime, timezone
+from urllib.parse import urlsplit
+from uuid import uuid4
+
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 app = FastAPI(title="Grovcentric API")
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173"], allow_methods=["*"], allow_headers=["*"])
 DEMO_USER = {"email": "demo@grovcentric.com", "password": "demo1234", "name": "Sara"}
 TOKENS: set[str] = set()
+PROJECTS = [
+    {"id": "project-bakery", "name": "Grovcentric Bakery", "websiteUrl": "https://example.com"},
+    {"id": "project-store", "name": "Grovcentric Online Store", "websiteUrl": "https://shop.example.com"},
+]
+AUDIT_ACTIVITY: list[dict] = []
+LEADS: list[dict] = []
 
 class Login(BaseModel):
     email: str
     password: str
+
+
+class ProjectAuditRequest(BaseModel):
+    projectId: str
+    url: str = Field(min_length=1, max_length=2048)
+
+
+class GeoAuditRequest(ProjectAuditRequest):
+    businessName: str = Field(default="", max_length=200)
+    focusAreas: list[str] = Field(min_length=1, max_length=5)
+
+
+class SchemaRequest(BaseModel):
+    url: str = Field(min_length=1, max_length=2048)
+    businessName: str = Field(default="", max_length=200)
+    businessType: str = Field(default="Auto Detect", max_length=50)
+
+
+class LeadGenerationRequest(BaseModel):
+    industry: str = Field(min_length=1, max_length=120)
+    location: str = Field(min_length=1, max_length=120)
+    quantity: int = Field(default=10, ge=1, le=30)
+
+
+class OutreachRequest(BaseModel):
+    channel: str = Field(default="email", pattern="^(email|social)$")
 
 def auth(authorization: str = Header(default="")) -> None:
     if authorization.removeprefix("Bearer ") not in TOKENS:
@@ -29,6 +65,8 @@ def dashboard():
     # Each block below will later be fed by a partner-built AI agent service.
     return {
         "user": DEMO_USER["name"], "health": 78,
+        "projects": PROJECTS,
+        "recentActivity": AUDIT_ACTIVITY[:5],
         "kpis": [{"label": "Revenue", "value": "$48,290", "delta": "+12.4%"},
                  {"label": "Business health", "value": "78/100", "delta": "+4 pts"},
                  {"label": "SEO score", "value": "82", "delta": "+6"},
@@ -82,3 +120,214 @@ def section(name: str):
     if name not in SECTIONS:
         raise HTTPException(404, "Unknown section")
     return SECTIONS[name]
+
+
+def validated_url(url: str) -> str:
+    value = url.strip()
+    try:
+        parsed = urlsplit(value)
+        hostname = parsed.hostname
+        parsed.port
+    except ValueError as error:
+        raise HTTPException(422, "Enter a valid http or https website URL.") from error
+    if parsed.scheme not in {"http", "https"} or not hostname or parsed.username or parsed.password:
+        raise HTTPException(422, "Enter a valid http or https website URL.")
+    return value
+
+
+def find_project(project_id: str) -> dict:
+    project = next((item for item in PROJECTS if item["id"] == project_id), None)
+    if project is None:
+        raise HTTPException(404, "Project not found.")
+    return project
+
+
+def record_activity(title: str, detail: str) -> None:
+    AUDIT_ACTIVITY.insert(
+        0,
+        {
+            "id": str(uuid4()),
+            "title": title,
+            "detail": detail,
+            "performedAt": datetime.now(timezone.utc).isoformat(),
+        },
+    )
+    del AUDIT_ACTIVITY[20:]
+
+
+@app.post("/api/tools/seo-audit", dependencies=[Depends(auth)])
+def seo_audit(body: ProjectAuditRequest):
+    project = find_project(body.projectId)
+    url = validated_url(body.url)
+    result = {
+        "auditId": str(uuid4()),
+        "score": 82,
+        "summary": f"Sample SEO findings for {url}. This demo does not crawl or score the live website.",
+        "issues": [
+            {
+                "severity": "Critical",
+                "category": "Metadata",
+                "description": "A page may be missing a unique meta description.",
+                "recommendation": "Write a concise description that accurately summarizes the page.",
+            },
+            {
+                "severity": "Warning",
+                "category": "Performance",
+                "description": "Large images can slow down page loading.",
+                "recommendation": "Compress images and serve appropriately sized formats.",
+            },
+            {
+                "severity": "Info",
+                "category": "Content",
+                "description": "Important pages benefit from a clear heading structure.",
+                "recommendation": "Use one descriptive H1 followed by logically nested headings.",
+            },
+        ],
+        "performedAt": datetime.now(timezone.utc).isoformat(),
+    }
+    record_activity("SEO audit", f"{project['name']} · score {result['score']}")
+    return result
+
+
+@app.post("/api/tools/geo-audit", dependencies=[Depends(auth)])
+def geo_audit(body: GeoAuditRequest):
+    project = find_project(body.projectId)
+    url = validated_url(body.url)
+    supported_areas = {
+        "AI visibility",
+        "Entity understanding",
+        "Content authority",
+        "Citations",
+        "Structured data",
+    }
+    if not set(body.focusAreas).issubset(supported_areas):
+        raise HTTPException(422, "One or more GEO focus areas are not supported.")
+    result = {
+        "score": 68,
+        "summary": f"Sample AI-search findings for {body.businessName.strip() or project['name']} at {url}.",
+        "issues": [
+            {
+                "severity": "High",
+                "title": "Clarify business identity",
+                "description": "Key business details should be stated consistently on important pages.",
+                "recommendation": "Use a consistent business name, description, and service area.",
+            },
+            {
+                "severity": "Medium",
+                "title": "Strengthen answer-ready content",
+                "description": "Direct answers to customer questions can be easier for answer engines to cite.",
+                "recommendation": "Add concise FAQs with evidence and links to supporting pages.",
+            },
+        ],
+        "opportunities": [
+            {
+                "title": "Improve structured context",
+                "description": "Structured information can help systems interpret your organization.",
+                "recommendation": "Add accurate Organization or LocalBusiness JSON-LD.",
+            },
+            {
+                "title": "Build source citations",
+                "description": "Consistent, trustworthy references support entity confidence.",
+                "recommendation": "Keep business information current on reputable directories.",
+            },
+        ],
+        "focusAreas": body.focusAreas,
+    }
+    record_activity("GEO audit", f"{project['name']} · score {result['score']}")
+    return result
+
+
+@app.post("/api/tools/schema", dependencies=[Depends(auth)])
+def generate_schema(body: SchemaRequest):
+    url = validated_url(body.url)
+    supported_types = {
+        "Organization",
+        "LocalBusiness",
+        "Restaurant",
+        "Store",
+        "Service",
+        "Product",
+        "SoftwareApplication",
+        "Article",
+        "Person",
+    }
+    business_type = body.businessType
+    if business_type not in {"Auto Detect", "auto", *supported_types}:
+        raise HTTPException(422, "Select a supported schema type.")
+    if business_type in {"Auto Detect", "auto"}:
+        business_type = "Organization"
+    parsed = urlsplit(url)
+    schema = {
+        "@context": "https://schema.org",
+        "@type": business_type,
+        "name": body.businessName.strip() or parsed.hostname,
+        "url": url,
+    }
+    return {
+        "schema": schema,
+        "businessType": business_type,
+        "validation": {
+            "valid": True,
+            "errors": [],
+            "warnings": ["Review and complete business-specific properties before publishing."],
+        },
+    }
+
+
+@app.get("/api/leads", dependencies=[Depends(auth)])
+def get_leads():
+    return {"leads": LEADS}
+
+
+@app.post("/api/leads/generate", dependencies=[Depends(auth)])
+def generate_leads(body: LeadGenerationRequest):
+    industry = body.industry.strip()
+    location = body.location.strip()
+    if not industry or not location:
+        raise HTTPException(422, "Industry and location are required.")
+    generated = []
+    start = len(LEADS) + 1
+    for index in range(start, start + body.quantity):
+        score = (94, 82, 68, 51)[(index - 1) % 4]
+        lead = {
+            "id": str(uuid4()),
+            "businessName": f"Demo {industry} Prospect {index:02d}",
+            "industry": industry,
+            "location": location,
+            "score": score,
+            "status": "HOT" if score >= 80 else "WARM" if score >= 60 else "COLD",
+        }
+        generated.append(lead)
+    LEADS[0:0] = generated
+    record_activity("Lead examples generated", f"{len(generated)} fictional examples · {location}")
+    return {"leads": generated}
+
+
+@app.delete("/api/leads/{lead_id}", dependencies=[Depends(auth)])
+def delete_lead(lead_id: str):
+    index = next((i for i, lead in enumerate(LEADS) if lead["id"] == lead_id), None)
+    if index is None:
+        raise HTTPException(404, "Lead not found.")
+    del LEADS[index]
+    return {"deleted": True}
+
+
+@app.post("/api/leads/{lead_id}/outreach", dependencies=[Depends(auth)])
+def draft_outreach(lead_id: str, body: OutreachRequest):
+    lead = next((item for item in LEADS if item["id"] == lead_id), None)
+    if lead is None:
+        raise HTTPException(404, "Lead not found.")
+    if body.channel == "social":
+        draft = (
+            f"Hi {lead['businessName']} team — I came across your business in {lead['location']} "
+            f"and would love to connect about opportunities in {lead['industry']}."
+        )
+    else:
+        draft = (
+            f"Subject: A quick idea for {lead['businessName']}\n\n"
+            f"Hi {lead['businessName']} team,\n\n"
+            f"I came across your business in {lead['location']} and wanted to share an idea "
+            f"that may be relevant to your work in {lead['industry']}. Would you be open to a short conversation?\n\n"
+            "Best,\nYour name"
+        )
+    return {"draft": draft, "sent": False}
