@@ -7,6 +7,7 @@ import {
   type LeadOutreachInput,
   type LeadOutreachOutput,
 } from "@/ai-core/agents/lead-qualification-agent";
+import type { IAIProviderManager } from "@/ai-core/interfaces/pipeline.interface";
 import type { OrganizationId, SessionId, UserId } from "@/ai-core/types/common.types";
 import { prisma } from "@/lib/db/prisma";
 import type { ILeadDataProvider, LeadDiscoveryCriteria } from "@/lib/leads/lead-provider.interface";
@@ -31,9 +32,11 @@ export interface QualifiedLeadResult {
 
 export class LeadService {
   private readonly provider: ILeadDataProvider;
+  private readonly aiProviderManager?: IAIProviderManager;
 
-  public constructor(provider?: ILeadDataProvider) {
+  public constructor(provider?: ILeadDataProvider, aiProviderManager?: IAIProviderManager) {
     this.provider = provider ?? new MockLeadDataProvider();
+    this.aiProviderManager = aiProviderManager;
   }
 
   /**
@@ -154,36 +157,12 @@ export class LeadService {
   public async generateOutreach(payload: LeadOutreachInput): Promise<LeadOutreachOutput> {
     bootstrapAICore();
 
+    const engine = new AIEngine({
+      promptManager: sharedPromptManager,
+      ...(this.aiProviderManager ? { providerManager: this.aiProviderManager } : {}),
+    });
     const agent = new LeadQualificationAgent();
-    const context = {
-      requestId: "outreach-" + Date.now(),
-      logger: {
-        debug: () => {},
-        info: () => {},
-        warn: () => {},
-        error: () => {},
-        child: () => ({ debug: () => {}, info: () => {}, warn: () => {}, error: () => {} }),
-      },
-      memory: {
-        getSession: async () => ({ entries: [] }),
-        addSessionEntry: async () => {},
-        getConversation: async () => ({ messages: [] }),
-        addConversationMessage: async () => {},
-        getWorkingMemory: async () => ({}),
-        setWorkingMemory: async () => {},
-        clearSession: async () => {},
-      },
-      prompts: sharedPromptManager,
-      tools: {
-        invoke: async () => {
-          throw new Error("No tools registered");
-        },
-        has: () => false,
-        list: () => [],
-        getDescriptor: () => undefined,
-      },
-    };
 
-    return agent.generateOutreach(payload, context as never);
+    return agent.generateOutreach(payload, { providerManager: engine.providerManager });
   }
 }

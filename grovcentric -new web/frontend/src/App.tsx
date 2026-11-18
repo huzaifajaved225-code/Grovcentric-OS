@@ -246,6 +246,8 @@ function Section({ name, token }: { name: string; token: string }) {
 function Dashboard({ token, onOut }: { token: string; onOut: () => void }) {
   const [d, setD] = useState<Data | null>(null),
     [failed, setFailed] = useState(false),
+    [insightBusy, setInsightBusy] = useState(false),
+    [insightError, setInsightError] = useState(""),
     [tab, setTab] = useState("Overview"),
     [sidebarCollapsed, setSidebarCollapsed] = useState(
       () => window.matchMedia("(max-width: 720px)").matches,
@@ -282,6 +284,20 @@ function Dashboard({ token, onOut }: { token: string; onOut: () => void }) {
     },
     [token, onOut],
   );
+  async function refreshInsight() {
+    setInsightBusy(true);
+    setInsightError("");
+    try {
+      const result = await request<{ insight: string }>("/api/tools/insight", { body: {} });
+      setD((current) => (current ? { ...current, insight: result.insight } : current));
+    } catch (reason) {
+      setInsightError(
+        reason instanceof Error ? reason.message : "Could not generate an AI insight.",
+      );
+    } finally {
+      setInsightBusy(false);
+    }
+  }
   const toolTab = TOOL_TABS.find((item) => item === tab);
   return (
     <div className={`app dashboard-shell${sidebarCollapsed ? "sidebar-collapsed" : ""}`}>
@@ -393,7 +409,14 @@ function Dashboard({ token, onOut }: { token: string; onOut: () => void }) {
               <div className="card insight">
                 <h3>AI INSIGHT</h3>
                 <p>{d.insight}</p>
-                <button className="btn">Apply suggestion</button>
+                {insightError ? (
+                  <p className="err" role="alert">
+                    {insightError}
+                  </p>
+                ) : null}
+                <button className="btn" onClick={refreshInsight} disabled={insightBusy}>
+                  {insightBusy ? "Generating insight…" : "Refresh AI insight"}
+                </button>
               </div>
               <div className="card health">
                 <h3>Business health</h3>

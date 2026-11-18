@@ -1,12 +1,21 @@
 """Grovcentric demo API. Replace in-memory demo data with persistent services before production."""
+import asyncio
+import json
+import os
 import secrets
 from datetime import datetime, timezone
+from pathlib import Path
 from urllib.parse import urlsplit
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 from uuid import uuid4
 
+from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+
+load_dotenv(Path(__file__).with_name(".env"))
 
 app = FastAPI(title="Grovcentric API")
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173"], allow_methods=["*"], allow_headers=["*"])
@@ -48,6 +57,54 @@ class LeadGenerationRequest(BaseModel):
 
 class OutreachRequest(BaseModel):
     channel: str = Field(default="email", pattern="^(email|social)$")
+
+
+def _call_ai_service(agent: str, payload: dict) -> dict:
+    service_url = os.getenv("AI_SERVICE_URL", "").rstrip("/")
+    service_token = os.getenv("AI_SERVICE_TOKEN", "")
+    if not service_url or len(service_token) < 32:
+        raise HTTPException(503, "AI agent service is not configured.")
+
+    parsed = urlsplit(service_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc or parsed.username or parsed.password:
+        raise HTTPException(503, "AI agent service URL is invalid.")
+
+    body = json.dumps({"agent": agent, "payload": payload}).encode("utf-8")
+    request = Request(
+        f"{service_url}/api/internal/agents",
+        data=body,
+        headers={
+            "Authorization": f"Bearer {service_token}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urlopen(request, timeout=120) as response:
+            response_body = response.read()
+    except HTTPError as error:
+        try:
+            error_body = json.loads(error.read())
+            message = error_body.get("error", {}).get("message", "The AI agent service rejected the request.")
+        except (json.JSONDecodeError, AttributeError):
+            message = "The AI agent service rejected the request."
+        raise HTTPException(502, message) from error
+    except (TimeoutError, URLError) as error:
+        raise HTTPException(502, "Could not reach the AI agent service.") from error
+
+    try:
+        result = json.loads(response_body)
+    except json.JSONDecodeError as error:
+        raise HTTPException(502, "The AI agent service returned an invalid response.") from error
+    if not isinstance(result, dict) or not result.get("success") or "data" not in result:
+        raise HTTPException(502, "The AI agent service returned an unsuccessful response.")
+    return result["data"]
+
+
+async def call_ai_service(agent: str, payload: dict) -> dict:
+    return await asyncio.to_thread(_call_ai_service, agent, payload)
+
 
 def auth(authorization: str = Header(default="")) -> None:
     if authorization.removeprefix("Bearer ") not in TOKENS:
@@ -156,32 +213,23 @@ def record_activity(title: str, detail: str) -> None:
 
 
 @app.post("/api/tools/seo-audit", dependencies=[Depends(auth)])
-def seo_audit(body: ProjectAuditRequest):
+async def seo_audit(body: ProjectAuditRequest):
     project = find_project(body.projectId)
     url = validated_url(body.url)
+    result = await call_ai_service(
+        "seo-audit",
+        {
+            "url": url,
+            "businessName": project["name"],
+            "focusAreas": "technical,on-page,performance",
+        },
+    )
     result = {
+        **result,
         "auditId": str(uuid4()),
-        "score": 82,
-        "summary": f"Sample SEO findings for {url}. This demo does not crawl or score the live website.",
         "issues": [
-            {
-                "severity": "Critical",
-                "category": "Metadata",
-                "description": "A page may be missing a unique meta description.",
-                "recommendation": "Write a concise description that accurately summarizes the page.",
-            },
-            {
-                "severity": "Warning",
-                "category": "Performance",
-                "description": "Large images can slow down page loading.",
-                "recommendation": "Compress images and serve appropriately sized formats.",
-            },
-            {
-                "severity": "Info",
-                "category": "Content",
-                "description": "Important pages benefit from a clear heading structure.",
-                "recommendation": "Use one descriptive H1 followed by logically nested headings.",
-            },
+            {**issue, "severity": issue["severity"].capitalize()}
+            for issue in result["issues"]
         ],
         "performedAt": datetime.now(timezone.utc).isoformat(),
     }
@@ -190,7 +238,7 @@ def seo_audit(body: ProjectAuditRequest):
 
 
 @app.post("/api/tools/geo-audit", dependencies=[Depends(auth)])
-def geo_audit(body: GeoAuditRequest):
+async def geo_audit(body: GeoAuditRequest):
     project = find_project(body.projectId)
     url = validated_url(body.url)
     supported_areas = {
@@ -202,43 +250,20 @@ def geo_audit(body: GeoAuditRequest):
     }
     if not set(body.focusAreas).issubset(supported_areas):
         raise HTTPException(422, "One or more GEO focus areas are not supported.")
-    result = {
-        "score": 68,
-        "summary": f"Sample AI-search findings for {body.businessName.strip() or project['name']} at {url}.",
-        "issues": [
-            {
-                "severity": "High",
-                "title": "Clarify business identity",
-                "description": "Key business details should be stated consistently on important pages.",
-                "recommendation": "Use a consistent business name, description, and service area.",
-            },
-            {
-                "severity": "Medium",
-                "title": "Strengthen answer-ready content",
-                "description": "Direct answers to customer questions can be easier for answer engines to cite.",
-                "recommendation": "Add concise FAQs with evidence and links to supporting pages.",
-            },
-        ],
-        "opportunities": [
-            {
-                "title": "Improve structured context",
-                "description": "Structured information can help systems interpret your organization.",
-                "recommendation": "Add accurate Organization or LocalBusiness JSON-LD.",
-            },
-            {
-                "title": "Build source citations",
-                "description": "Consistent, trustworthy references support entity confidence.",
-                "recommendation": "Keep business information current on reputable directories.",
-            },
-        ],
-        "focusAreas": body.focusAreas,
-    }
+    result = await call_ai_service(
+        "geo-audit",
+        {
+            "url": url,
+            "businessName": body.businessName.strip() or project["name"],
+            "focusAreas": body.focusAreas,
+        },
+    )
     record_activity("GEO audit", f"{project['name']} · score {result['score']}")
     return result
 
 
 @app.post("/api/tools/schema", dependencies=[Depends(auth)])
-def generate_schema(body: SchemaRequest):
+async def generate_schema(body: SchemaRequest):
     url = validated_url(body.url)
     supported_types = {
         "Organization",
@@ -254,22 +279,30 @@ def generate_schema(body: SchemaRequest):
     business_type = body.businessType
     if business_type not in {"Auto Detect", "auto", *supported_types}:
         raise HTTPException(422, "Select a supported schema type.")
-    if business_type in {"Auto Detect", "auto"}:
-        business_type = "Organization"
-    parsed = urlsplit(url)
+    result = await call_ai_service(
+        "schema",
+        {
+            "url": url,
+            "businessType": "auto" if business_type in {"Auto Detect", "auto"} else business_type,
+        },
+    )
+    validation = result["validation"]
+    warnings = list(validation["warnings"])
+    warnings.extend(
+        f"Recommended property is missing: {property_name}"
+        for property_name in validation.get("missingRecommendedProperties", [])
+    )
     schema = {
-        "@context": "https://schema.org",
-        "@type": business_type,
-        "name": body.businessName.strip() or parsed.hostname,
-        "url": url,
+        **result["schema"],
+        **({"name": body.businessName.strip()} if body.businessName.strip() else {}),
     }
     return {
         "schema": schema,
-        "businessType": business_type,
+        "businessType": result["businessType"],
         "validation": {
-            "valid": True,
-            "errors": [],
-            "warnings": ["Review and complete business-specific properties before publishing."],
+            "valid": validation["valid"],
+            "errors": validation["errors"],
+            "warnings": warnings,
         },
     }
 
@@ -280,26 +313,44 @@ def get_leads():
 
 
 @app.post("/api/leads/generate", dependencies=[Depends(auth)])
-def generate_leads(body: LeadGenerationRequest):
+async def generate_leads(body: LeadGenerationRequest):
     industry = body.industry.strip()
     location = body.location.strip()
     if not industry or not location:
         raise HTTPException(422, "Industry and location are required.")
     generated = []
     start = len(LEADS) + 1
-    for index in range(start, start + body.quantity):
-        score = (94, 82, 68, 51)[(index - 1) % 4]
-        lead = {
+    candidates = [
+        {
             "id": str(uuid4()),
             "businessName": f"Demo {industry} Prospect {index:02d}",
             "industry": industry,
             "location": location,
-            "score": score,
-            "status": "HOT" if score >= 80 else "WARM" if score >= 60 else "COLD",
+            "description": "Fictional demo prospect generated for agent qualification.",
         }
-        generated.append(lead)
+        for index in range(start, start + body.quantity)
+    ]
+    semaphore = asyncio.Semaphore(3)
+
+    async def qualify(candidate: dict) -> dict:
+        async with semaphore:
+            qualification = await call_ai_service(
+                "lead-qualification",
+                {
+                    "businessName": candidate["businessName"],
+                    "industry": industry,
+                    "location": location,
+                    "description": candidate["description"],
+                },
+            )
+        return {
+            **candidate,
+            **qualification,
+        }
+
+    generated = await asyncio.gather(*(qualify(candidate) for candidate in candidates))
     LEADS[0:0] = generated
-    record_activity("Lead examples generated", f"{len(generated)} fictional examples · {location}")
+    record_activity("Leads qualified", f"{len(generated)} fictional examples · {location}")
     return {"leads": generated}
 
 
@@ -313,21 +364,50 @@ def delete_lead(lead_id: str):
 
 
 @app.post("/api/leads/{lead_id}/outreach", dependencies=[Depends(auth)])
-def draft_outreach(lead_id: str, body: OutreachRequest):
+async def draft_outreach(lead_id: str, body: OutreachRequest):
     lead = next((item for item in LEADS if item["id"] == lead_id), None)
     if lead is None:
         raise HTTPException(404, "Lead not found.")
-    if body.channel == "social":
-        draft = (
-            f"Hi {lead['businessName']} team — I came across your business in {lead['location']} "
-            f"and would love to connect about opportunities in {lead['industry']}."
-        )
-    else:
-        draft = (
-            f"Subject: A quick idea for {lead['businessName']}\n\n"
-            f"Hi {lead['businessName']} team,\n\n"
-            f"I came across your business in {lead['location']} and wanted to share an idea "
-            f"that may be relevant to your work in {lead['industry']}. Would you be open to a short conversation?\n\n"
-            "Best,\nYour name"
-        )
+    outreach = await call_ai_service(
+        "lead-outreach",
+        {
+            "businessName": lead["businessName"],
+            "industry": lead["industry"],
+            "location": lead["location"],
+            "opportunity": lead["opportunity"],
+            "recommendedService": lead["recommendedService"],
+            "channel": "general" if body.channel == "social" else "email",
+        },
+    )
+    draft = (
+        f"Subject: {outreach['subject']}\n\n{outreach['message']}"
+        if outreach.get("subject")
+        else outreach["message"]
+    )
     return {"draft": draft, "sent": False}
+
+
+@app.post("/api/tools/insight", dependencies=[Depends(auth)])
+async def generate_insight():
+    dashboard_data = dashboard()
+    result = await call_ai_service(
+        "general",
+        {
+            "systemMessage": (
+                "You are a concise business analyst. Use only the dashboard data provided. "
+                "Do not present demo metrics as verified real-world facts."
+            ),
+            "prompt": (
+                "Write one short executive insight and a practical next action based on this "
+                "dashboard snapshot:\n"
+                + json.dumps(
+                    {
+                        "health": dashboard_data["health"],
+                        "kpis": dashboard_data["kpis"],
+                        "currentInsight": dashboard_data["insight"],
+                    }
+                )
+            ),
+        },
+    )
+    return {"insight": result["text"]}

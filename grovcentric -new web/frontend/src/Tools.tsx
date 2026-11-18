@@ -131,7 +131,7 @@ function SeoAudit({
         subtitle="Review on-page and technical SEO issues for a project."
       />
       <p className="note">
-        Demo audit: results are sample recommendations and do not crawl your website.
+        The AI agent fetches your website and generates recommendations from its page content.
       </p>
       <form className="card tool-form" onSubmit={submit}>
         {projects.length ? (
@@ -226,7 +226,7 @@ function GeoAudit({
         subtitle="See how clearly your business can be understood by AI search."
       />
       <p className="note">
-        Demo audit: results are sample recommendations and do not crawl your website.
+        The AI agent fetches your website and assesses its visibility signals for answer engines.
       </p>
       <form className="card tool-form" onSubmit={submit}>
         {projects.length ? (
@@ -341,7 +341,7 @@ function SchemaBuilder({ request }: { request: Requester }): React.JSX.Element {
         subtitle="Generate and validate copy-ready JSON-LD structured data."
       />
       <p className="note">
-        The generated schema uses the details you enter; it does not inspect the website.
+        The AI agent inspects your website and creates JSON-LD from the information it can verify.
       </p>
       <form className="card tool-form" onSubmit={submit}>
         <label>
@@ -498,11 +498,11 @@ function LeadGeneration({ request }: { request: Requester }): React.JSX.Element 
     <>
       <ToolHeading
         title="AI Lead Generation"
-        subtitle="Generate, qualify, search, and organize demo leads."
+        subtitle="Generate fictional sample leads, then qualify them with the AI agent."
       />
       <p className="note">
-        Demo leads are fictional examples, not verified businesses or contacts. Outreach is drafted
-        only and never sent.
+        Lead examples are fictional, not verified businesses or contacts. The AI agent scores each
+        example. Outreach is drafted only and never sent.
       </p>
       <form className="card tool-form" onSubmit={generate}>
         <label>

@@ -1,6 +1,8 @@
 import { describe, it, expect } from "vitest";
 import { MockLeadDataProvider } from "@/lib/leads/mock-lead-provider";
 import { LeadService } from "@/lib/leads/lead-service";
+import type { IAIProviderManager } from "@/ai-core/interfaces/pipeline.interface";
+import type { AIProviderRequest, AIProviderResponse } from "@/lib/ai/provider.types";
 
 describe("Lead Provider and Service", () => {
   it("generates realistic candidate leads for requested industry and location", async () => {
@@ -59,6 +61,41 @@ describe("Lead Provider and Service", () => {
       expect(lead.recommendedService).toBeDefined();
     }
   }, 15000);
+
+  it("generates lead outreach through the configured AI provider manager", async () => {
+    let receivedRequest: AIProviderRequest | undefined;
+    const providerManager: IAIProviderManager = {
+      async generateText(request): Promise<AIProviderResponse> {
+        receivedRequest = request;
+        return {
+          text: JSON.stringify({
+            channel: "email",
+            subject: "A growth idea",
+            message: "Would you be open to a short conversation?",
+          }),
+          model: "mock-model",
+          metadata: {},
+        };
+      },
+    };
+    const service = new LeadService(undefined, providerManager);
+
+    const result = await service.generateOutreach({
+      businessName: "Summit Law Partners",
+      industry: "Legal",
+      location: "Austin, TX",
+      opportunity: "Improve local search visibility",
+      recommendedService: "SEO optimization",
+      channel: "email",
+    });
+
+    expect(receivedRequest?.model).toBe("gemini-3.6-flash");
+    expect(result).toEqual({
+      channel: "email",
+      subject: "A growth idea",
+      message: "Would you be open to a short conversation?",
+    });
+  });
 
   it("formats CSV data correctly without missing fields", () => {
     const mockLeads = [

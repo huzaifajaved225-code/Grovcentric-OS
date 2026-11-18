@@ -162,7 +162,7 @@ export abstract class BaseAgent<TPayload = Metadata, TResult = Metadata> impleme
    */
   protected generateText(
     request: AIProviderRequest,
-    context: IExecutionContext,
+    context: Pick<IExecutionContext, "providerManager">,
   ): Promise<AIProviderResponse> {
     return context.providerManager.generateText(request);
   }

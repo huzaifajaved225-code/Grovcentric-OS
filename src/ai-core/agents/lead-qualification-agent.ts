@@ -222,7 +222,7 @@ export class LeadQualificationAgent extends BaseAgent<
    */
   public async generateOutreach(
     payload: LeadOutreachInput,
-    context: IExecutionContext,
+    context: Pick<IExecutionContext, "providerManager">,
   ): Promise<LeadOutreachOutput> {
     const parseResult = leadOutreachInputSchema.safeParse(payload);
     if (!parseResult.success) {
